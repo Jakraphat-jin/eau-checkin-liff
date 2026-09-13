@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>จอแสดง QR เช็คอิน</title>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -37,7 +37,8 @@
   }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: #94a3b8; margin-bottom: 16px; }
-  #qrcanvas { margin: 0 auto; display: block; }
+  #qrcanvas { margin: 0 auto; }
+  #qrcanvas img, #qrcanvas canvas { display: block; margin: 0 auto; }
   .count { font-size: 48px; font-weight: 700; text-align: center; margin: 0 0 4px; }
   ul { list-style: none; padding: 0; margin: 0; max-height: 520px; overflow: auto; }
   li { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #334155; }
@@ -51,7 +52,7 @@
   <div class="left">
     <h1 id="sessionTitle">กำลังโหลด...</h1>
     <div class="sub" id="sessionSub"></div>
-    <canvas id="qrcanvas"></canvas>
+    <div id="qrcanvas" style="display:inline-block;"></div>
     <div class="sub" id="expireInfo"></div>
   </div>
   <div class="right">
@@ -75,6 +76,7 @@ let currentSessionId = null;
 let currentSessionData = null;
 let rotateTimer = null;
 let listPollTimer = null;
+let qrInstance = null;
 
 function parseThaiDateTime(str) {
   // รูปแบบ "dd/MM/yyyy HH:mm" (yyyy เป็น พ.ศ.)
@@ -146,9 +148,17 @@ async function rotateToken() {
   });
 
   const url = 'https://liff.line.me/' + LIFF_ID + '?session=' + currentSessionId + '&token=' + token;
-  QRCode.toCanvas(document.getElementById('qrcanvas'), url, { width: 280 }, function (err) {
-    if (err) console.error(err);
-  });
+  if (!qrInstance) {
+    qrInstance = new QRCode(document.getElementById('qrcanvas'), {
+      text: url,
+      width: 280,
+      height: 280,
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } else {
+    qrInstance.clear();
+    qrInstance.makeCode(url);
+  }
   document.getElementById('expireInfo').textContent = 'QR หมุนทุก 15 วินาที';
 }
 
