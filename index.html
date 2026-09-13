@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>เช็คอิน EAU</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Tahoma', sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+    padding: 20px;
+    color: #222;
+  }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 420px;
+    margin: 0 auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+  h2 { margin-top: 0; font-size: 20px; }
+  input, select {
+    width: 100%;
+    padding: 12px;
+    margin: 8px 0;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 15px;
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    margin-top: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #06c755;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  button:disabled { background: #ccc; }
+  .status { text-align: center; padding: 40px 0; }
+  .status.success { color: #06c755; }
+  .status.error { color: #e53935; }
+  .icon { font-size: 48px; margin-bottom: 12px; }
+  .detail { color: #666; font-size: 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="card" id="app">
+    <div class="status" id="loading">
+      <div class="icon">⏳</div>
+      <div>กำลังโหลด...</div>
+    </div>
+  </div>
+
+<script>
+// ===== ตั้งค่า =====
+const LIFF_ID = '2011575398-NLO46voT';
+const FIREBASE_DB_URL = 'https://eau-checkin-classstu-67a9e-default-rtdb.asia-southeast1.firebasedatabase.app';
+const TERM_ID = '2569-1';
+
+const params = new URLSearchParams(window.location.search);
+const sessionId = params.get('session');
+const qrToken = params.get('token');
+
+let lineUserId = null;
+const app = document.getElementById('app');
+
+function render(html) { app.innerHTML = html; }
+
+function showError(title, detail) {
+  render(
+    '<div class="status error"><div class="icon">✕</div><div>' + title + '</div>' +
+    (detail ? '<div class="detail">' + detail + '</div>' : '') + '</div>'
+  );
+}
+
+function showSuccess(title, detail) {
+  render(
+    '<div class="status success"><div class="icon">✓</div><div>' + title + '</div>' +
+    (detail ? '<div class="detail">' + detail + '</div>' : '') + '</div>'
+  );
+}
+
+async function main() {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+
+    const profile = await liff.getProfile();
+    lineUserId = profile.userId;
+
+    if (!sessionId || !qrToken) {
+      showError('ลิงก์ไม่ถูกต้อง', 'กรุณาสแกน QR ที่อาจารย์แสดงบนจอ');
+      return;
+    }
+
+    // ตรวจสอบว่าลงทะเบียนแล้วหรือยัง
+    const studentRes = await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json');
+    const student = await studentRes.json();
+
+    if (!student) {
+      showRegisterForm(profile.displayName);
+    } else {
+      await doCheckin(student);
+    }
+  } catch (err) {
+    showError('เกิดข้อผิดพลาด', err.message);
+  }
+}
+
+function showRegisterForm(displayName) {
+  render(
+    '<h2>ลงทะเบียนครั้งแรก</h2>' +
+    '<div class="detail">สวัสดี ' + displayName + ' กรอกข้อมูลเพื่อลงทะเบียน (ครั้งเดียว ใช้ได้จนจบการศึกษา)</div>' +
+    '<input id="studentId" placeholder="รหัสนักศึกษา" inputmode="numeric">' +
+    '<input id="name" placeholder="ชื่อ-นามสกุล">' +
+    '<input id="faculty" placeholder="คณะ">' +
+    '<button id="submitBtn" onclick="submitRegister()">ลงทะเบียน</button>'
+  );
+}
+
+async function submitRegister() {
+  const studentId = document.getElementById('studentId').value.trim();
+  const name = document.getElementById('name').value.trim();
+  const faculty = document.getElementById('faculty').value.trim();
+
+  if (!studentId || !name || !faculty) {
+    alert('กรุณากรอกข้อมูลให้ครบ');
+    return;
+  }
+
+  document.getElementById('submitBtn').disabled = true;
+
+  const student = {
+    studentId: studentId,
+    name: name,
+    faculty: faculty,
+    registeredAt: new Date().toISOString()
+  };
+
+  await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(student)
+  });
+
+  await doCheckin(student);
+}
+
+async function doCheckin(student) {
+  render('<div class="status"><div class="icon">⏳</div><div>กำลังตรวจสอบ QR...</div></div>');
+
+  // ตรวจสอบ session และ token
+  const sessionRes = await fetch(FIREBASE_DB_URL + '/activeSessions/' + sessionId + '.json');
+  const session = await sessionRes.json();
+
+  if (!session || session.status !== 'active') {
+    showError('คาบเรียน/กิจกรรมนี้ปิดแล้ว', 'ไม่สามารถเช็คอินได้');
+    return;
+  }
+
+  if (session.currentQrToken !== qrToken) {
+    showError('QR หมดอายุแล้ว', 'กรุณาสแกน QR ใหม่บนจอ');
+    return;
+  }
+
+  // ตรวจสอบว่าเช็คอินไปแล้วหรือยัง
+  const existingRes = await fetch(FIREBASE_DB_URL + '/checkins/' + sessionId + '/' + lineUserId + '.json');
+  const existing = await existingRes.json();
+  if (existing) {
+    showSuccess('เช็คอินแล้ว', 'คุณเช็คอินคาบนี้ไปแล้วเมื่อ ' + new Date(existing.checkinTime).toLocaleTimeString('th-TH'));
+    return;
+  }
+
+  // ขอพิกัด (บังคับ)
+  render('<div class="status"><div class="icon">📍</div><div>กรุณาอนุญาตการเข้าถึงตำแหน่ง</div></div>');
+
+  navigator.geolocation.getCurrentPosition(
+    async function (pos) {
+      await saveCheckin(student, pos.coords.latitude, pos.coords.longitude, session);
+    },
+    async function () {
+      showError('ต้องเปิดสิทธิ์ตำแหน่ง (Location)', 'กรุณาอนุญาตแล้วลองสแกน QR ใหม่อีกครั้ง');
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+async function saveCheckin(student, lat, lng, session) {
+  const checkinData = {
+    studentId: student.studentId,
+    name: student.name,
+    checkinTime: new Date().toISOString(),
+    qrTokenUsed: qrToken,
+    lat: lat,
+    lng: lng
+  };
+
+  await fetch(FIREBASE_DB_URL + '/checkins/' + sessionId + '/' + lineUserId + '.json', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(checkinData)
+  });
+
+  // อัปเดตยอดสะสม
+  const code = session.code || session.name || sessionId;
+  const summaryPath = '/summary/' + TERM_ID + '/' + student.studentId + '/' + code + '.json';
+  const summaryRes = await fetch(FIREBASE_DB_URL + summaryPath);
+  const summary = await summaryRes.json();
+  const total = (summary && summary.totalCheckins ? summary.totalCheckins : 0) + 1;
+
+  await fetch(FIREBASE_DB_URL + summaryPath, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ totalCheckins: total })
+  });
+
+  showSuccess('เช็คอินสำเร็จ', student.name + ' • ' + new Date().toLocaleTimeString('th-TH'));
+}
+
+main();
+</script>
+</body>
+</html>
