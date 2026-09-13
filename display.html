@@ -44,6 +44,7 @@
   li { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #334155; }
   li:nth-child(odd) { background: #24324a; }
   .time { color: #94a3b8; font-size: 13px; }
+  .sid { color: #94a3b8; font-size: 12px; }
   .empty { text-align: center; color: #64748b; padding: 60px 0; }
 </style>
 </head>
@@ -186,7 +187,7 @@ async function pollCheckins() {
   document.getElementById('list').innerHTML = entries.length
     ? entries.map(function (e) {
         const t = new Date(e.checkinTime).toLocaleTimeString('th-TH');
-        return '<li><span>' + e.name + '</span><span class="time">' + t + '</span></li>';
+        return '<li><span>' + e.name + ' <span class="sid">(' + e.studentId + ')</span></span><span class="time">' + t + '</span></li>';
       }).join('')
     : '<div class="empty">ยังไม่มีใครเช็คอิน</div>';
 }
