@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>จอแสดง QR เช็คอิน</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Tahoma', sans-serif;
+    background: #0f172a;
+    color: #fff;
+    margin: 0;
+    padding: 30px;
+  }
+  .wrap {
+    display: flex;
+    gap: 40px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .left {
+    flex: 0 0 340px;
+    background: #fff;
+    border-radius: 16px;
+    padding: 24px;
+    text-align: center;
+    color: #111;
+    height: fit-content;
+  }
+  .right {
+    flex: 1;
+    background: #1e293b;
+    border-radius: 16px;
+    padding: 24px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #94a3b8; margin-bottom: 16px; }
+  #qrcanvas { margin: 0 auto; display: block; }
+  .count { font-size: 48px; font-weight: 700; text-align: center; margin: 0 0 4px; }
+  ul { list-style: none; padding: 0; margin: 0; max-height: 520px; overflow: auto; }
+  li { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #334155; }
+  li:nth-child(odd) { background: #24324a; }
+  .time { color: #94a3b8; font-size: 13px; }
+  .empty { text-align: center; color: #64748b; padding: 60px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <h1 id="sessionTitle">กำลังโหลด...</h1>
+    <div class="sub" id="sessionSub"></div>
+    <canvas id="qrcanvas"></canvas>
+    <div class="sub" id="expireInfo"></div>
+  </div>
+  <div class="right">
+    <div class="count" id="checkedCount">0</div>
+    <div class="sub" style="text-align:center; margin-bottom:12px;">คนเช็คอินแล้ว</div>
+    <ul id="list"></ul>
+  </div>
+</div>
+
+<script>
+// ===== ตั้งค่า =====
+const FIREBASE_DB_URL = 'https://eau-checkin-classstu-67a9e-default-rtdb.asia-southeast1.firebasedatabase.app';
+const TERM_ID = '2569-1';
+const LIFF_ID = '2011575398-NLO46voT';
+const QR_ROTATE_MS = 15000;
+
+const forcedSession = new URLSearchParams(location.search).get('session'); // สำหรับทดสอบ/ระบุคาบเอง
+const roomFilter = new URLSearchParams(location.search).get('room'); // กรองตามห้อง (ถ้ามีหลายจอพร้อมกัน)
+
+let currentSessionId = null;
+let currentSessionData = null;
+let rotateTimer = null;
+let listPollTimer = null;
+
+function parseThaiDateTime(str) {
+  // รูปแบบ "dd/MM/yyyy HH:mm" (yyyy เป็น พ.ศ.)
+  if (!str) return null;
+  const [datePart, timePart] = str.split(' ');
+  const [d, m, yBE] = datePart.split('/').map(Number);
+  const [hh, mm] = (timePart || '00:00').split(':').map(Number);
+  return new Date(yBE - 543, m - 1, d, hh, mm);
+}
+
+async function findActiveSession() {
+  const res = await fetch(FIREBASE_DB_URL + '/schedule/' + TERM_ID + '.json');
+  const schedule = await res.json();
+  if (!schedule) return null;
+
+  if (forcedSession && schedule[forcedSession]) {
+    return { id: forcedSession, data: schedule[forcedSession] };
+  }
+
+  const now = new Date();
+  for (const id in schedule) {
+    const s = schedule[id];
+    if (roomFilter && s.room !== roomFilter) continue;
+    const start = parseThaiDateTime(s.startTime);
+    const end = parseThaiDateTime(s.endTime);
+    if (start && end && now >= start && now <= end) {
+      return { id: id, data: s };
+    }
+  }
+  return null;
+}
+
+function randomToken() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+async function activateSession(id, data) {
+  currentSessionId = id;
+  currentSessionData = data;
+
+  document.getElementById('sessionTitle').textContent = data.name || data.code || id;
+  document.getElementById('sessionSub').textContent =
+    (data.teacher ? data.teacher + ' • ' : '') + (data.room || '');
+
+  await rotateToken();
+  rotateTimer = setInterval(rotateToken, QR_ROTATE_MS);
+  pollCheckins();
+  listPollTimer = setInterval(pollCheckins, 3000);
+}
+
+async function rotateToken() {
+  const end = parseThaiDateTime(currentSessionData.endTime);
+  if (end && new Date() > end && !forcedSession) {
+    await closeSession();
+    return;
+  }
+
+  const token = randomToken();
+
+  await fetch(FIREBASE_DB_URL + '/activeSessions/' + currentSessionId + '.json', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      currentQrToken: token,
+      qrExpiresAt: Date.now() + QR_ROTATE_MS,
+      status: 'active',
+      code: currentSessionData.code || currentSessionData.name || currentSessionId
+    })
+  });
+
+  const url = 'https://liff.line.me/' + LIFF_ID + '?session=' + currentSessionId + '&token=' + token;
+  QRCode.toCanvas(document.getElementById('qrcanvas'), url, { width: 280 }, function (err) {
+    if (err) console.error(err);
+  });
+  document.getElementById('expireInfo').textContent = 'QR หมุนทุก 15 วินาที';
+}
+
+async function closeSession() {
+  clearInterval(rotateTimer);
+  clearInterval(listPollTimer);
+  await fetch(FIREBASE_DB_URL + '/activeSessions/' + currentSessionId + '.json', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'closed' })
+  });
+  document.getElementById('expireInfo').textContent = 'ปิดคาบแล้ว';
+  document.getElementById('sessionSub').textContent += ' (จบคาบ)';
+  setTimeout(main, 5000);
+}
+
+async function pollCheckins() {
+  const res = await fetch(FIREBASE_DB_URL + '/checkins/' + currentSessionId + '.json');
+  const data = (await res.json()) || {};
+  const entries = Object.values(data).sort(function (a, b) {
+    return new Date(b.checkinTime) - new Date(a.checkinTime);
+  });
+
+  document.getElementById('checkedCount').textContent = entries.length;
+  document.getElementById('list').innerHTML = entries.length
+    ? entries.map(function (e) {
+        const t = new Date(e.checkinTime).toLocaleTimeString('th-TH');
+        return '<li><span>' + e.name + '</span><span class="time">' + t + '</span></li>';
+      }).join('')
+    : '<div class="empty">ยังไม่มีใครเช็คอิน</div>';
+}
+
+async function main() {
+  const found = await findActiveSession();
+  if (!found) {
+    document.getElementById('sessionTitle').textContent = 'ไม่มีคาบเรียน/กิจกรรมในขณะนี้';
+    document.getElementById('sessionSub').textContent = 'ระบบจะแสดง QR อัตโนมัติเมื่อถึงเวลาตามตารางสอน';
+    setTimeout(main, 30000);
+    return;
+  }
+  await activateSession(found.id, found.data);
+}
+
+main();
+</script>
+</body>
+</html>
