@@ -219,7 +219,7 @@ async function saveCheckin(student, lat, lng, session) {
   await fetch(FIREBASE_DB_URL + summaryPath, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ totalCheckins: total })
+    body: JSON.stringify({ totalCheckins: total, name: student.name })
   });
 
   showSuccess('เช็คอินสำเร็จ', student.name + ' • ' + new Date().toLocaleTimeString('th-TH'));
