@@ -69,6 +69,7 @@ const sessionId = params.get('session');
 const qrToken = params.get('token');
 
 let lineUserId = null;
+let validatedSession = null;
 const app = document.getElementById('app');
 
 function render(html) { app.innerHTML = html; }
@@ -100,6 +101,20 @@ async function main() {
       return;
     }
 
+    // ตรวจสอบ QR token ทันที (ก่อนกรอกฟอร์ม กันหมดอายุระหว่างลงทะเบียน)
+    const sessionRes = await fetch(FIREBASE_DB_URL + '/activeSessions/' + sessionId + '.json');
+    const session = await sessionRes.json();
+
+    if (!session || session.status !== 'active') {
+      showError('คาบเรียน/กิจกรรมนี้ปิดแล้ว', 'ไม่สามารถเช็คอินได้');
+      return;
+    }
+    if (session.currentQrToken !== qrToken) {
+      showError('QR หมดอายุแล้ว', 'กรุณาสแกน QR ใหม่บนจอ');
+      return;
+    }
+    validatedSession = session;
+
     // ตรวจสอบว่าลงทะเบียนแล้วหรือยัง
     const studentRes = await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json');
     const student = await studentRes.json();
@@ -107,7 +122,7 @@ async function main() {
     if (!student) {
       showRegisterForm(profile.displayName);
     } else {
-      await doCheckin(student);
+      await proceedCheckin(student);
     }
   } catch (err) {
     showError('เกิดข้อผิดพลาด', err.message);
@@ -150,25 +165,11 @@ async function submitRegister() {
     body: JSON.stringify(student)
   });
 
-  await doCheckin(student);
+  await proceedCheckin(student);
 }
 
-async function doCheckin(student) {
-  render('<div class="status"><div class="icon">⏳</div><div>กำลังตรวจสอบ QR...</div></div>');
-
-  // ตรวจสอบ session และ token
-  const sessionRes = await fetch(FIREBASE_DB_URL + '/activeSessions/' + sessionId + '.json');
-  const session = await sessionRes.json();
-
-  if (!session || session.status !== 'active') {
-    showError('คาบเรียน/กิจกรรมนี้ปิดแล้ว', 'ไม่สามารถเช็คอินได้');
-    return;
-  }
-
-  if (session.currentQrToken !== qrToken) {
-    showError('QR หมดอายุแล้ว', 'กรุณาสแกน QR ใหม่บนจอ');
-    return;
-  }
+async function proceedCheckin(student) {
+  render('<div class="status"><div class="icon">⏳</div><div>กำลังตรวจสอบ...</div></div>');
 
   // ตรวจสอบว่าเช็คอินไปแล้วหรือยัง
   const existingRes = await fetch(FIREBASE_DB_URL + '/checkins/' + sessionId + '/' + lineUserId + '.json');
@@ -183,7 +184,7 @@ async function doCheckin(student) {
 
   navigator.geolocation.getCurrentPosition(
     async function (pos) {
-      await saveCheckin(student, pos.coords.latitude, pos.coords.longitude, session);
+      await saveCheckin(student, pos.coords.latitude, pos.coords.longitude, validatedSession);
     },
     async function () {
       showError('ต้องเปิดสิทธิ์ตำแหน่ง (Location)', 'กรุณาอนุญาตแล้วลองสแกน QR ใหม่อีกครั้ง');
