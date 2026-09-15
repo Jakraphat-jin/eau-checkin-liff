@@ -67,6 +67,7 @@ const TERM_ID = '2569-1';
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get('session');
 const qrToken = params.get('token');
+const mode = params.get('mode'); // 'myrecord' = ดูผลการเข้าเรียนของตัวเอง
 
 let lineUserId = null;
 let validatedSession = null;
@@ -95,6 +96,11 @@ async function main() {
 
     const profile = await liff.getProfile();
     lineUserId = profile.userId;
+
+    if (mode === 'myrecord') {
+      await mainMyRecord(profile);
+      return;
+    }
 
     if (!sessionId || !qrToken) {
       showError('ลิงก์ไม่ถูกต้อง', 'กรุณาสแกน QR ที่อาจารย์แสดงบนจอ');
@@ -129,18 +135,76 @@ async function main() {
   }
 }
 
-function showRegisterForm(displayName) {
+// ===================== โหมด: ดูผลการเข้าเรียนของตัวเอง =====================
+async function mainMyRecord(profile) {
+  const studentRes = await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json');
+  const student = await studentRes.json();
+
+  if (!student) {
+    showRegisterForm(profile.displayName, true);
+  } else {
+    await showMyRecord(student);
+  }
+}
+
+async function showMyRecord(student) {
+  render('<div class="status"><div class="icon">⏳</div><div>กำลังโหลดข้อมูล...</div></div>');
+
+  const [summaryRes, scheduleRes] = await Promise.all([
+    fetch(FIREBASE_DB_URL + '/summary/' + TERM_ID + '/' + student.studentId + '.json'),
+    fetch(FIREBASE_DB_URL + '/schedule/' + TERM_ID + '.json')
+  ]);
+  const summary = (await summaryRes.json()) || {};
+  const schedule = (await scheduleRes.json()) || {};
+
+  // นับจำนวนคาบทั้งหมด + คะแนนเต็ม ต่อรหัสวิชา จากตารางสอน
+  const codeInfo = {};
+  for (const id in schedule) {
+    const s = schedule[id];
+    const code = s.code || s.name || id;
+    if (!codeInfo[code]) codeInfo[code] = { totalSessions: 0, fullScore: s.fullScore || 0 };
+    codeInfo[code].totalSessions += 1;
+  }
+
+  const codes = Object.keys(summary);
+  let rowsHtml = '';
+
+  if (codes.length === 0) {
+    rowsHtml = '<div class="detail" style="text-align:center; padding:20px 0;">ยังไม่มีประวัติการเช็คอิน</div>';
+  } else {
+    codes.forEach(function (code) {
+      const totalCheckins = summary[code].totalCheckins || 0;
+      const info = codeInfo[code] || { totalSessions: totalCheckins, fullScore: 0 };
+      const rawScore = info.totalSessions > 0 ? (info.fullScore / info.totalSessions) * totalCheckins : 0;
+      const score = Math.min(info.fullScore, Math.round(rawScore * 100) / 100);
+      rowsHtml +=
+        '<div style="border-bottom:1px solid #eee; padding:10px 0;">' +
+        '<div style="font-weight:600;">' + code + '</div>' +
+        '<div class="detail">เข้าเรียน ' + totalCheckins + ' / ' + info.totalSessions + ' คาบ' +
+        (info.fullScore ? ' • คะแนน ' + score + '/' + info.fullScore : '') +
+        '</div></div>';
+    });
+  }
+
+  render(
+    '<h2>ผลการเข้าเรียนของฉัน</h2>' +
+    '<div class="detail">' + student.name + ' (' + student.studentId + ')</div>' +
+    '<div style="margin-top:12px;">' + rowsHtml + '</div>'
+  );
+}
+
+function showRegisterForm(displayName, forRecord) {
   render(
     '<h2>ลงทะเบียนครั้งแรก</h2>' +
     '<div class="detail">สวัสดี ' + displayName + ' กรอกข้อมูลเพื่อลงทะเบียน (ครั้งเดียว ใช้ได้จนจบการศึกษา)</div>' +
     '<input id="studentId" placeholder="รหัสนักศึกษา" inputmode="numeric">' +
     '<input id="name" placeholder="ชื่อ-นามสกุล">' +
     '<input id="faculty" placeholder="คณะ">' +
-    '<button id="submitBtn" onclick="submitRegister()">ลงทะเบียน</button>'
+    '<button id="submitBtn" onclick="submitRegister(' + (forRecord ? 'true' : 'false') + ')">ลงทะเบียน</button>'
   );
 }
 
-async function submitRegister() {
+async function submitRegister(forRecord) {
   const studentId = document.getElementById('studentId').value.trim();
   const name = document.getElementById('name').value.trim();
   const faculty = document.getElementById('faculty').value.trim();
@@ -165,7 +229,11 @@ async function submitRegister() {
     body: JSON.stringify(student)
   });
 
-  await proceedCheckin(student);
+  if (forRecord) {
+    await showMyRecord(student);
+  } else {
+    await proceedCheckin(student);
+  }
 }
 
 async function proceedCheckin(student) {
