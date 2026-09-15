@@ -14,12 +14,7 @@
     margin: 0;
     padding: 30px;
   }
-  .wrap {
-    display: flex;
-    gap: 40px;
-    max-width: 1200px;
-    margin: 0 auto;
-  }
+  .wrap { display: flex; gap: 40px; max-width: 1200px; margin: 0 auto; }
   .left {
     flex: 0 0 340px;
     background: #fff;
@@ -29,12 +24,7 @@
     color: #111;
     height: fit-content;
   }
-  .right {
-    flex: 1;
-    background: #1e293b;
-    border-radius: 16px;
-    padding: 24px;
-  }
+  .right { flex: 1; background: #1e293b; border-radius: 16px; padding: 24px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: #94a3b8; margin-bottom: 16px; }
   #qrcanvas { margin: 0 auto; }
@@ -65,13 +55,12 @@
 
 <script>
 // ===== ตั้งค่า =====
-const FIREBASE_DB_URL = 'https://eau-checkin-classstu-67a9e-default-rtdb.asia-southeast1.firebasedatabase.app';
-const TERM_ID = '2569-1';
+const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbwCcQ9C-kqq0ICmzxFuXIMPier4LlGPozo9kvCVFJmAjtHc7WyCTEXAW-slYAo862Q/exec';
 const LIFF_ID = '2011575398-NLO46voT';
-const QR_ROTATE_MS = 15000;
+const QR_ROTATE_MS = 30000;
 
-const forcedSession = new URLSearchParams(location.search).get('session'); // สำหรับทดสอบ/ระบุคาบเอง
-const roomFilter = new URLSearchParams(location.search).get('room'); // กรองตามห้อง (ถ้ามีหลายจอพร้อมกัน)
+const forcedSession = new URLSearchParams(location.search).get('session');
+const roomFilter = new URLSearchParams(location.search).get('room');
 
 let currentSessionId = null;
 let currentSessionData = null;
@@ -79,19 +68,34 @@ let rotateTimer = null;
 let listPollTimer = null;
 let qrInstance = null;
 
+async function apiGet(action, params) {
+  const qs = new URLSearchParams(Object.assign({ action: action }, params || {})).toString();
+  const res = await fetch(API_BASE_URL + '?' + qs);
+  return res.json();
+}
+
+async function apiPost(action, data) {
+  const res = await fetch(API_BASE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(Object.assign({ action: action }, data))
+  });
+  return res.json();
+}
+
 function parseThaiDateTime(str) {
-  // รูปแบบ "dd/MM/yyyy HH:mm" (yyyy เป็น พ.ศ.)
   if (!str) return null;
-  const [datePart, timePart] = str.split(' ');
-  const [d, m, yBE] = datePart.split('/').map(Number);
-  const [hh, mm] = (timePart || '00:00').split(':').map(Number);
-  return new Date(yBE - 543, m - 1, d, hh, mm);
+  const parts = str.split(' ');
+  const datePart = parts[0];
+  const timePart = parts[1] || '00:00';
+  const dmy = datePart.split('/').map(Number);
+  const hm = timePart.split(':').map(Number);
+  return new Date(dmy[2] - 543, dmy[1] - 1, dmy[0], hm[0], hm[1]);
 }
 
 async function findActiveSession() {
-  const res = await fetch(FIREBASE_DB_URL + '/schedule/' + TERM_ID + '.json');
-  const schedule = await res.json();
-  if (!schedule) return null;
+  const schedule = await apiGet('getSchedule');
+  if (!schedule || Object.keys(schedule).length === 0) return null;
 
   if (forcedSession && schedule[forcedSession]) {
     return { id: forcedSession, data: schedule[forcedSession] };
@@ -108,10 +112,6 @@ async function findActiveSession() {
     }
   }
   return null;
-}
-
-function randomToken() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
 async function activateSession(id, data) {
@@ -135,50 +135,36 @@ async function rotateToken() {
     return;
   }
 
-  const token = randomToken();
-
-  await fetch(FIREBASE_DB_URL + '/activeSessions/' + currentSessionId + '.json', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      currentQrToken: token,
-      qrExpiresAt: Date.now() + QR_ROTATE_MS,
-      status: 'active',
-      code: currentSessionData.code || currentSessionData.name || currentSessionId
-    })
+  const result = await apiPost('rotateToken', {
+    sessionId: currentSessionId,
+    code: currentSessionData.code || currentSessionData.name || currentSessionId,
+    rotateMs: QR_ROTATE_MS
   });
 
-  const url = 'https://liff.line.me/' + LIFF_ID + '?session=' + currentSessionId + '&token=' + token;
+  const url = 'https://liff.line.me/' + LIFF_ID + '?session=' + currentSessionId + '&token=' + result.token;
+
   if (!qrInstance) {
     qrInstance = new QRCode(document.getElementById('qrcanvas'), {
-      text: url,
-      width: 280,
-      height: 280,
-      correctLevel: QRCode.CorrectLevel.M
+      text: url, width: 280, height: 280, correctLevel: QRCode.CorrectLevel.M
     });
   } else {
     qrInstance.clear();
     qrInstance.makeCode(url);
   }
-  document.getElementById('expireInfo').textContent = 'QR หมุนทุก 15 วินาที';
+  document.getElementById('expireInfo').textContent = 'QR หมุนทุก 30 วินาที';
 }
 
 async function closeSession() {
   clearInterval(rotateTimer);
   clearInterval(listPollTimer);
-  await fetch(FIREBASE_DB_URL + '/activeSessions/' + currentSessionId + '.json', {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: 'closed' })
-  });
+  await apiPost('closeSession', { sessionId: currentSessionId });
   document.getElementById('expireInfo').textContent = 'ปิดคาบแล้ว';
   document.getElementById('sessionSub').textContent += ' (จบคาบ)';
   setTimeout(main, 5000);
 }
 
 async function pollCheckins() {
-  const res = await fetch(FIREBASE_DB_URL + '/checkins/' + currentSessionId + '.json');
-  const data = (await res.json()) || {};
+  const data = await apiGet('getCheckinsList', { sessionId: currentSessionId }) || {};
   const entries = Object.values(data).sort(function (a, b) {
     return new Date(b.checkinTime) - new Date(a.checkinTime);
   });

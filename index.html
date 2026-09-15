@@ -61,8 +61,7 @@
 <script>
 // ===== ตั้งค่า =====
 const LIFF_ID = '2011575398-NLO46voT';
-const FIREBASE_DB_URL = 'https://eau-checkin-classstu-67a9e-default-rtdb.asia-southeast1.firebasedatabase.app';
-const TERM_ID = '2569-1';
+const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbwCcQ9C-kqq0ICmzxFuXIMPier4LlGPozo9kvCVFJmAjtHc7WyCTEXAW-slYAo862Q/exec';
 
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get('session');
@@ -70,7 +69,6 @@ const qrToken = params.get('token');
 const mode = params.get('mode'); // 'myrecord' = ดูผลการเข้าเรียนของตัวเอง
 
 let lineUserId = null;
-let validatedSession = null;
 const app = document.getElementById('app');
 
 function render(html) { app.innerHTML = html; }
@@ -89,6 +87,21 @@ function showSuccess(title, detail) {
   );
 }
 
+async function apiGet(action, params) {
+  const qs = new URLSearchParams(Object.assign({ action: action }, params)).toString();
+  const res = await fetch(API_BASE_URL + '?' + qs);
+  return res.json();
+}
+
+async function apiPost(action, data) {
+  const res = await fetch(API_BASE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(Object.assign({ action: action }, data))
+  });
+  return res.json();
+}
+
 async function main() {
   try {
     await liff.init({ liffId: LIFF_ID });
@@ -98,7 +111,7 @@ async function main() {
     lineUserId = profile.userId;
 
     if (mode === 'myrecord') {
-      await mainMyRecord(profile);
+      await showMyRecord();
       return;
     }
 
@@ -107,81 +120,42 @@ async function main() {
       return;
     }
 
-    // ตรวจสอบ QR token ทันที (ก่อนกรอกฟอร์ม กันหมดอายุระหว่างลงทะเบียน)
-    const sessionRes = await fetch(FIREBASE_DB_URL + '/activeSessions/' + sessionId + '.json');
-    const session = await sessionRes.json();
+    const student = await apiGet('getStudent', { userId: lineUserId });
 
-    if (!session || session.status !== 'active') {
-      showError('คาบเรียน/กิจกรรมนี้ปิดแล้ว', 'ไม่สามารถเช็คอินได้');
-      return;
-    }
-    if (session.currentQrToken !== qrToken) {
-      showError('QR หมดอายุแล้ว', 'กรุณาสแกน QR ใหม่บนจอ');
-      return;
-    }
-    validatedSession = session;
-
-    // ตรวจสอบว่าลงทะเบียนแล้วหรือยัง
-    const studentRes = await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json');
-    const student = await studentRes.json();
-
-    if (!student) {
+    if (!student || !student.studentId) {
       showRegisterForm(profile.displayName);
     } else {
-      await proceedCheckin(student);
+      await proceedCheckin();
     }
   } catch (err) {
     showError('เกิดข้อผิดพลาด', err.message);
   }
 }
 
-// ===================== โหมด: ดูผลการเข้าเรียนของตัวเอง =====================
-async function mainMyRecord(profile) {
-  const studentRes = await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json');
-  const student = await studentRes.json();
-
-  if (!student) {
-    showRegisterForm(profile.displayName, true);
-  } else {
-    await showMyRecord(student);
-  }
-}
-
-async function showMyRecord(student) {
+async function showMyRecord() {
   render('<div class="status"><div class="icon">⏳</div><div>กำลังโหลดข้อมูล...</div></div>');
 
-  const [summaryRes, scheduleRes] = await Promise.all([
-    fetch(FIREBASE_DB_URL + '/summary/' + TERM_ID + '/' + student.studentId + '.json'),
-    fetch(FIREBASE_DB_URL + '/schedule/' + TERM_ID + '.json')
-  ]);
-  const summary = (await summaryRes.json()) || {};
-  const schedule = (await scheduleRes.json()) || {};
+  const data = await apiGet('getMyRecord', { userId: lineUserId });
 
-  // นับจำนวนคาบทั้งหมด + คะแนนเต็ม ต่อรหัสวิชา จากตารางสอน
-  const codeInfo = {};
-  for (const id in schedule) {
-    const s = schedule[id];
-    const code = s.code || s.name || id;
-    if (!codeInfo[code]) codeInfo[code] = { totalSessions: 0, fullScore: s.fullScore || 0 };
-    codeInfo[code].totalSessions += 1;
+  if (!data.registered) {
+    const profile = await liff.getProfile();
+    showRegisterForm(profile.displayName, true);
+    return;
   }
 
-  const codes = Object.keys(summary);
+  const student = data.student;
+  const rows = data.rows || [];
   let rowsHtml = '';
 
-  if (codes.length === 0) {
+  if (rows.length === 0) {
     rowsHtml = '<div class="detail" style="text-align:center; padding:20px 0;">ยังไม่มีประวัติการเช็คอิน</div>';
   } else {
-    codes.forEach(function (code) {
-      const totalCheckins = summary[code].totalCheckins || 0;
-      const info = codeInfo[code] || { totalSessions: totalCheckins, fullScore: 0 };
-      const rawScore = info.totalSessions > 0 ? (info.fullScore / info.totalSessions) * totalCheckins : 0;
-      const score = Math.min(info.fullScore, Math.round(rawScore * 100) / 100);
+    rows.forEach(function (r) {
       rowsHtml +=
         '<div style="border-bottom:1px solid #eee; padding:10px 0;">' +
-        '<div style="font-weight:600;">' + code + '</div>' +
-        '<div class="detail">เข้าเรียน ' + totalCheckins + ' / ' + info.totalSessions + ' คาบ' +
-        (info.fullScore ? ' • คะแนน ' + score + '/' + info.fullScore : '') +
+        '<div style="font-weight:600;">' + r.code + '</div>' +
+        '<div class="detail">เข้าเรียน ' + r.totalCheckins + ' / ' + r.totalSessions + ' คาบ' +
+        (r.fullScore ? ' • คะแนน ' + r.score + '/' + r.fullScore : '') +
         '</div></div>';
     });
   }
@@ -216,81 +190,63 @@ async function submitRegister(forRecord) {
 
   document.getElementById('submitBtn').disabled = true;
 
-  const student = {
+  const result = await apiPost('registerStudent', {
+    userId: lineUserId,
     studentId: studentId,
     name: name,
-    faculty: faculty,
-    registeredAt: new Date().toISOString()
-  };
-
-  await fetch(FIREBASE_DB_URL + '/students/' + lineUserId + '.json', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(student)
+    faculty: faculty
   });
 
-  if (forRecord) {
-    await showMyRecord(student);
-  } else {
-    await proceedCheckin(student);
-  }
-}
-
-async function proceedCheckin(student) {
-  render('<div class="status"><div class="icon">⏳</div><div>กำลังตรวจสอบ...</div></div>');
-
-  // ตรวจสอบว่าเช็คอินไปแล้วหรือยัง
-  const existingRes = await fetch(FIREBASE_DB_URL + '/checkins/' + sessionId + '/' + lineUserId + '.json');
-  const existing = await existingRes.json();
-  if (existing) {
-    showSuccess('เช็คอินแล้ว', 'คุณเช็คอินคาบนี้ไปแล้วเมื่อ ' + new Date(existing.checkinTime).toLocaleTimeString('th-TH'));
+  if (result.error) {
+    showError('ลงทะเบียนไม่สำเร็จ', result.error);
     return;
   }
 
-  // ขอพิกัด (บังคับ)
+  if (forRecord) {
+    await showMyRecord();
+  } else {
+    await proceedCheckin();
+  }
+}
+
+async function proceedCheckin() {
   render('<div class="status"><div class="icon">📍</div><div>กรุณาอนุญาตการเข้าถึงตำแหน่ง</div></div>');
 
   navigator.geolocation.getCurrentPosition(
     async function (pos) {
-      await saveCheckin(student, pos.coords.latitude, pos.coords.longitude, validatedSession);
+      await saveCheckin(pos.coords.latitude, pos.coords.longitude);
     },
-    async function () {
+    function () {
       showError('ต้องเปิดสิทธิ์ตำแหน่ง (Location)', 'กรุณาอนุญาตแล้วลองสแกน QR ใหม่อีกครั้ง');
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
 }
 
-async function saveCheckin(student, lat, lng, session) {
-  const checkinData = {
-    studentId: student.studentId,
-    name: student.name,
-    checkinTime: new Date().toISOString(),
-    qrTokenUsed: qrToken,
+async function saveCheckin(lat, lng) {
+  render('<div class="status"><div class="icon">⏳</div><div>กำลังบันทึกเช็คอิน...</div></div>');
+
+  const result = await apiPost('submitCheckin', {
+    sessionId: sessionId,
+    userId: lineUserId,
+    token: qrToken,
     lat: lat,
     lng: lng
-  };
-
-  await fetch(FIREBASE_DB_URL + '/checkins/' + sessionId + '/' + lineUserId + '.json', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(checkinData)
   });
 
-  // อัปเดตยอดสะสม
-  const code = session.code || session.name || sessionId;
-  const summaryPath = '/summary/' + TERM_ID + '/' + student.studentId + '/' + code + '.json';
-  const summaryRes = await fetch(FIREBASE_DB_URL + summaryPath);
-  const summary = await summaryRes.json();
-  const total = (summary && summary.totalCheckins ? summary.totalCheckins : 0) + 1;
-
-  await fetch(FIREBASE_DB_URL + summaryPath, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ totalCheckins: total, name: student.name })
-  });
-
-  showSuccess('เช็คอินสำเร็จ', student.name + ' • ' + new Date().toLocaleTimeString('th-TH'));
+  if (result.error === 'session_closed') {
+    showError('คาบเรียน/กิจกรรมนี้ปิดแล้ว', 'ไม่สามารถเช็คอินได้');
+  } else if (result.error === 'token_expired') {
+    showError('QR หมดอายุแล้ว', 'กรุณาสแกน QR ใหม่บนจอ');
+  } else if (result.error === 'not_registered') {
+    showError('ยังไม่ได้ลงทะเบียน', 'กรุณาสแกน QR ใหม่อีกครั้ง');
+  } else if (result.error) {
+    showError('เกิดข้อผิดพลาด', result.error);
+  } else if (result.alreadyCheckedIn) {
+    showSuccess('เช็คอินแล้ว', 'คุณเช็คอินคาบนี้ไปแล้วเมื่อ ' + new Date(result.checkinTime).toLocaleTimeString('th-TH'));
+  } else {
+    showSuccess('เช็คอินสำเร็จ', result.studentName + ' • ' + new Date(result.time).toLocaleTimeString('th-TH'));
+  }
 }
 
 main();
